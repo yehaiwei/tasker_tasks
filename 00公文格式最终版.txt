@@ -1,0 +1,307 @@
+Sub FormatOfficialDocument_UltimatePro()
+
+    On Error GoTo ErrorHandler
+    
+    '==============================
+    ' 一、性能优化与防死机机制
+    '==============================
+    Application.ScreenUpdating = False
+    Application.Options.Pagination = False
+    Application.DisplayAlerts = False
+    System.Cursor = wdCursorWait
+    
+    Dim doc As Document
+    Set doc = ActiveDocument
+    
+    '==============================
+    ' 二、清理 AI/Markdown 冗余符号
+    '==============================
+    Call CleanMarkdown(doc)
+    
+    '==============================
+    ' 三、页面设置（严格公文标准）
+    '==============================
+    With doc.PageSetup
+        .PaperSize = wdPaperA4
+        .TopMargin = CentimetersToPoints(3.0)
+        .BottomMargin = CentimetersToPoints(2.7)
+        .LeftMargin = CentimetersToPoints(2.8)
+        .RightMargin = CentimetersToPoints(2.8)
+    End With
+    
+    '==============================
+    ' 四、核心修复：排版底层参数大洗底
+    '==============================
+    ' 1. 将所有自动编号转为纯文本
+    doc.ConvertNumbersToText
+    
+    ' 2. 彻底解决“标号符号间距过大”：删除转换后产生的制表符(Tab)
+    With doc.Content.Find
+        .ClearFormatting
+        .Replacement.ClearFormatting
+        .Text = "^t"
+        .Replacement.Text = ""
+        .Execute Replace:=wdReplaceAll
+    End With
+    
+    ' 3. 【全新升级】彻底清理句号“前面”和“后面”的多余空格（支持消除多个连续空格）
+    Dim puncBefore As Variant
+    Dim puncAfter As Variant
+    Dim i As Integer
+    
+    ' 3.1 清理句号【前面】的空格
+    puncBefore = Array(" 。", "　。", " .") 
+    For i = LBound(puncBefore) To UBound(puncBefore)
+        With doc.Content.Find
+            .ClearFormatting
+            .Replacement.ClearFormatting
+            .Text = puncBefore(i)
+            .Replacement.Text = Right(puncBefore(i), 1) ' 保留句号本身
+            .Forward = True
+            .Wrap = wdFindContinue
+            .MatchWildcards = False
+            ' 循环替换，确保多个空格也能被彻底删净
+            Do While .Execute(Replace:=wdReplaceAll)
+                DoEvents
+            Loop
+        End With
+    Next i
+    
+    ' 3.2 【新增】清理句号【后面】的空格
+    puncAfter = Array("。 ", "。　", ". ", ".　") 
+    For i = LBound(puncAfter) To UBound(puncAfter)
+        With doc.Content.Find
+            .ClearFormatting
+            .Replacement.ClearFormatting
+            .Text = puncAfter(i)
+            .Replacement.Text = Left(puncAfter(i), 1) ' 保留句号本身
+            .Forward = True
+            .Wrap = wdFindContinue
+            .MatchWildcards = False
+            ' 循环替换，确保多个空格也能被彻底删净
+            Do While .Execute(Replace:=wdReplaceAll)
+                DoEvents
+            Loop
+        End With
+    Next i
+    
+    ' 4. 重置缩进与行距参数
+    With doc.Content.ParagraphFormat
+        .LeftIndent = 0
+        .RightIndent = 0
+        .FirstLineIndent = 0
+        .CharacterUnitLeftIndent = 0
+        .CharacterUnitRightIndent = 0
+        .CharacterUnitFirstLineIndent = 2 ' 正文默认首行空两格
+        
+        .SpaceBefore = 0
+        .SpaceBeforeAuto = False
+        .SpaceAfter = 0
+        .SpaceAfterAuto = False
+        .LineSpacingRule = wdLineSpaceExactly
+        .LineSpacing = 30 ' 固定值30磅
+        .DisableLineHeightGrid = True
+        .Alignment = wdAlignParagraphJustify
+        .AutoAdjustRightIndent = False
+    End With
+    
+    ' 5. 全局正文底座字体设定
+    With doc.Content.Font
+        .NameFarEast = "仿宋_GB2312"
+        .NameAscii = "Times New Roman"
+        .Size = 16 ' 三号
+        .Bold = False
+    End With
+    
+    '==============================
+    ' 五、逐段智能判定标题级别并覆写格式
+    '==============================
+    Dim para As Paragraph
+    Dim txt As String
+    Dim isFirstPara As Boolean
+    Dim paraCount As Long
+    
+    isFirstPara = True
+    paraCount = 0
+    
+    For Each para In doc.Paragraphs
+        paraCount = paraCount + 1
+        If paraCount Mod 20 = 0 Then DoEvents
+        
+        ' 表格内的段落在此处跳过，交由第六步专门处理
+        If para.Range.Information(wdWithInTable) Then GoTo NextPara
+        
+        txt = para.Range.Text
+        txt = Replace(txt, Chr(13), "")
+        txt = Replace(txt, Chr(7), "")
+        
+        ' 清除行首人工敲打的空格，让系统缩进精准接管
+        Do While Left(txt, 1) = " " Or Left(txt, 1) = "　"
+            txt = Mid(txt, 2)
+            para.Range.Characters(1).Delete
+        Loop
+        
+        If txt = "" Then GoTo NextPara
+        
+        ' ---------------------------------
+        ' 1. 大标题判定
+        ' ---------------------------------
+        If isFirstPara Then
+            With para.Range
+                .Font.NameFarEast = "方正小标宋简体"
+                .Font.NameAscii = "Times New Roman"
+                .Font.Size = 22
+                .Font.Bold = True
+                .ParagraphFormat.Alignment = wdAlignParagraphCenter
+                .ParagraphFormat.CharacterUnitFirstLineIndent = 0
+            End With
+            isFirstPara = False
+            GoTo NextPara
+        End If
+        
+        ' ---------------------------------
+        ' 2. 一级标题：一、二、
+        ' ---------------------------------
+        If txt Like "[一二三四五六七八九十]*、*" Then
+            para.Range.Font.NameFarEast = "黑体"
+            para.Range.Font.Bold = False
+            GoTo NextPara
+        End If
+        
+        ' ---------------------------------
+        ' 3. 二级标题：（一）（二）
+        ' ---------------------------------
+        If txt Like "（[一二三四五六七八九十]*）*" Then
+            para.Range.Font.NameFarEast = "楷体_GB2312"
+            para.Range.Font.Bold = True
+            GoTo NextPara
+        End If
+        
+        ' ---------------------------------
+        ' 4. 三级标题：阿拉伯数字点转顿号及加粗分离
+        ' ---------------------------------
+        If txt Like "#.*" Or txt Like "##.*" Or txt Like "#、*" Or txt Like "##、*" Or txt Like "#．*" Or txt Like "##．*" Then
+            
+            Dim numDotPos As Integer
+            ' 寻找数字后面的点（限制在前3个字符内寻找，防止误判）
+            numDotPos = InStr(1, Left(txt, 3), ".")
+            If numDotPos = 0 Then numDotPos = InStr(1, Left(txt, 3), "．")
+            
+            ' 核心替换：圆点改顿号，并清理附带的残余空格
+            If numDotPos > 0 Then
+                para.Range.Characters(numDotPos).Text = "、"
+                If para.Range.Characters(numDotPos + 1).Text = " " Then
+                    para.Range.Characters(numDotPos + 1).Delete
+                End If
+                txt = para.Range.Text
+                txt = Replace(txt, Chr(13), "")
+                txt = Replace(txt, Chr(7), "")
+            End If
+            
+            ' 标题主体加粗
+            para.Range.Font.Bold = True
+            
+            ' 寻找标题后的句号或冒号，精准取消后半段正文的加粗
+            Dim dotPos As Long
+            dotPos = InStr(txt, "。")
+            If dotPos = 0 Then dotPos = InStr(txt, "：")
+            
+            If dotPos > 0 Then
+                Dim rngBody As Range
+                Set rngBody = doc.Range(Start:=para.Range.Start + dotPos, End:=para.Range.End)
+                rngBody.Font.Bold = False
+            End If
+            GoTo NextPara
+        End If
+        
+NextPara:
+    Next para
+    
+    '==============================
+    ' 六、表格专项美化引擎（内外全封闭单实线）
+    '==============================
+    Dim tbl As Table
+    For Each tbl In doc.Tables
+        ' 1. 表格物理居中与间距清零（解决相近线出现双线的核心）
+        tbl.Rows.Alignment = wdAlignRowCenter
+        tbl.Spacing = 0 ' 强制单元格间距为0，让所有边框完美重合
+        
+        ' 2. 单元格内容【垂直居中】
+        tbl.Range.Cells.VerticalAlignment = wdCellAlignVerticalCenter
+        
+        ' 3. 表格内部字体与段落洗底
+        With tbl.Range
+            .Font.NameFarEast = "仿宋_GB2312"
+            .Font.NameAscii = "Times New Roman"
+            .Font.Size = 16
+            .Font.Bold = False
+            
+            With .ParagraphFormat
+                .Alignment = wdAlignParagraphCenter
+                .CharacterUnitFirstLineIndent = 0   ' 剥离首行缩进，确保文字绝对居中
+                .FirstLineIndent = 0
+                .LeftIndent = 0
+                .RightIndent = 0
+                .LineSpacingRule = wdLineSpaceExactly
+                .LineSpacing = 30 
+                .DisableLineHeightGrid = True
+            End With
+        End With
+        
+        ' 4. 重置所有框线为标准单实线（内外统一）
+        tbl.Borders.Enable = False ' 先扒掉所有自带的混乱线型
+        tbl.Borders.Enable = True  ' 重新赋予标准的网格单实线
+        With tbl.Borders
+            .InsideLineStyle = wdLineStyleSingle
+            .InsideLineWidth = wdLineWidth050pt
+            .OutsideLineStyle = wdLineStyleSingle
+            .OutsideLineWidth = wdLineWidth050pt
+        End With
+        
+        ' 5. 表头智能识别加粗
+        If tbl.Rows.Count > 1 Then
+            tbl.Rows(1).Range.Font.Bold = True
+            tbl.Rows(1).Range.Font.NameFarEast = "黑体"
+        End If
+        
+        DoEvents 
+    Next tbl
+    
+    '==============================
+    ' 七、恢复环境与结束
+    '==============================
+    Application.Options.Pagination = True
+    Application.ScreenUpdating = True
+    Application.DisplayAlerts = True
+    System.Cursor = wdCursorNormal
+    
+    MsgBox "深度公文排版完毕！" & vbCrLf & "【最新优化】：系统已全局扫描并彻底清除了全篇文档中出现在句号『后面』的任何多余空格。", vbInformation
+    Exit Sub
+
+ErrorHandler:
+    Application.Options.Pagination = True
+    Application.ScreenUpdating = True
+    Application.DisplayAlerts = True
+    System.Cursor = wdCursorNormal
+    MsgBox "执行异常：" & Err.Description, vbCritical
+End Sub
+
+Private Sub CleanMarkdown(doc As Document)
+    Dim symbols As Variant
+    Dim j As Integer
+    symbols = Array("**", "---", "### ", "## ", "# ", "> ")
+    
+    For j = LBound(symbols) To UBound(symbols)
+        With doc.Content.Find
+            .ClearFormatting
+            .Replacement.ClearFormatting
+            .Text = symbols(j)
+            .Replacement.Text = ""
+            .Forward = True
+            .Wrap = wdFindContinue
+            .MatchWildcards = False
+            .Execute Replace:=wdReplaceAll
+        End With
+        DoEvents
+    Next j
+End Sub
