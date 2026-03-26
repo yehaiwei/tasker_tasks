@@ -1,0 +1,244 @@
+Sub FormatOfficialDocument_WithTable()
+
+    On Error GoTo ErrorHandler
+    
+    '==============================
+    ' 一、性能优化与防死机机制
+    '==============================
+    Application.ScreenUpdating = False
+    Application.Options.Pagination = False
+    Application.DisplayAlerts = False
+    System.Cursor = wdCursorWait
+    
+    Dim doc As Document
+    Set doc = ActiveDocument
+    
+    '==============================
+    ' 二、清理 AI/Markdown 冗余符号
+    '==============================
+    Call CleanMarkdown(doc)
+    
+    '==============================
+    ' 三、页面设置（严格公文标准）
+    '==============================
+    With doc.PageSetup
+        .PaperSize = wdPaperA4
+        .TopMargin = CentimetersToPoints(3.0)
+        .BottomMargin = CentimetersToPoints(2.7)
+        .LeftMargin = CentimetersToPoints(2.8)
+        .RightMargin = CentimetersToPoints(2.8)
+    End With
+    
+    '==============================
+    ' 四、核心修复：排版底层参数大洗底
+    '==============================
+    ' 1. 将所有自动编号转为纯文本
+    doc.ConvertNumbersToText
+    
+    ' 2. 彻底解决“标号符号间距过大”：删除转换后产生的制表符(Tab)
+    With doc.Content.Find
+        .ClearFormatting
+        .Replacement.ClearFormatting
+        .Text = "^t"
+        .Replacement.Text = ""
+        .Execute Replace:=wdReplaceAll
+    End With
+    
+    ' 3. 彻底解决“句号前有空格”：全局静默替换
+    Dim puncSpaces As Variant
+    Dim i As Integer
+    puncSpaces = Array(" 。", "　。", " .") 
+    For i = LBound(puncSpaces) To UBound(puncSpaces)
+        With doc.Content.Find
+            .ClearFormatting
+            .Replacement.ClearFormatting
+            .Text = puncSpaces(i)
+            .Replacement.Text = Right(puncSpaces(i), 1)
+            .Forward = True
+            .Wrap = wdFindContinue
+            .MatchWildcards = False
+            .Execute Replace:=wdReplaceAll
+        End With
+    Next i
+    
+    ' 4. 重置缩进与行距参数
+    With doc.Content.ParagraphFormat
+        .LeftIndent = 0
+        .RightIndent = 0
+        .FirstLineIndent = 0
+        .CharacterUnitLeftIndent = 0
+        .CharacterUnitRightIndent = 0
+        .CharacterUnitFirstLineIndent = 2 ' 正文默认首行空两格
+        
+        .SpaceBefore = 0
+        .SpaceBeforeAuto = False
+        .SpaceAfter = 0
+        .SpaceAfterAuto = False
+        .LineSpacingRule = wdLineSpaceExactly
+        .LineSpacing = 30 ' 固定值30磅
+        .DisableLineHeightGrid = True
+        .Alignment = wdAlignParagraphJustify
+        .AutoAdjustRightIndent = False
+    End With
+    
+    ' 5. 全局正文底座字体设定
+    With doc.Content.Font
+        .NameFarEast = "仿宋_GB2312"
+        .NameAscii = "Times New Roman"
+        .Size = 16 ' 三号
+        .Bold = False
+    End With
+    
+    '==============================
+    ' 五、逐段智能判定标题级别并覆写格式
+    '==============================
+    Dim para As Paragraph
+    Dim txt As String
+    Dim isFirstPara As Boolean
+    Dim paraCount As Long
+    
+    isFirstPara = True
+    paraCount = 0
+    
+    For Each para In doc.Paragraphs
+        paraCount = paraCount + 1
+        If paraCount Mod 20 = 0 Then DoEvents
+        
+        ' 表格内的段落在此处跳过（交由第六步专门处理），防止格式冲突
+        If para.Range.Information(wdWithInTable) Then GoTo NextPara
+        
+        txt = para.Range.Text
+        txt = Replace(txt, Chr(13), "")
+        txt = Replace(txt, Chr(7), "")
+        
+        Do While Left(txt, 1) = " " Or Left(txt, 1) = "　"
+            txt = Mid(txt, 2)
+            para.Range.Characters(1).Delete
+        Loop
+        
+        If txt = "" Then GoTo NextPara
+        
+        ' 大标题判定
+        If isFirstPara Then
+            With para.Range
+                .Font.NameFarEast = "方正小标宋简体"
+                .Font.NameAscii = "Times New Roman"
+                .Font.Size = 22
+                .Font.Bold = True
+                .ParagraphFormat.Alignment = wdAlignParagraphCenter
+                .ParagraphFormat.CharacterUnitFirstLineIndent = 0
+            End With
+            isFirstPara = False
+            GoTo NextPara
+        End If
+        
+        ' 一级标题：一、二、
+        If txt Like "[一二三四五六七八九十]*、*" Then
+            para.Range.Font.NameFarEast = "黑体"
+            para.Range.Font.Bold = False
+            GoTo NextPara
+        End If
+        
+        ' 二级标题：（一）（二）
+        If txt Like "（[一二三四五六七八九十]*）*" Then
+            para.Range.Font.NameFarEast = "楷体_GB2312"
+            para.Range.Font.Bold = True
+            GoTo NextPara
+        End If
+        
+        ' 三级标题：1. 11.
+        If txt Like "#.*" Or txt Like "##.*" Or txt Like "#、*" Or txt Like "##、*" Or txt Like "#．*" Or txt Like "##．*" Then
+            para.Range.Font.Bold = True
+            Dim dotPos As Long
+            dotPos = InStr(txt, "。")
+            If dotPos = 0 Then dotPos = InStr(txt, "：")
+            
+            If dotPos > 0 Then
+                Dim rngBody As Range
+                Set rngBody = doc.Range(Start:=para.Range.Start + dotPos, End:=para.Range.End)
+                rngBody.Font.Bold = False
+            End If
+            GoTo NextPara
+        End If
+        
+NextPara:
+    Next para
+    
+    '==============================
+    ' 六、【新增】表格专项美化引擎
+    '==============================
+    Dim tbl As Table
+    For Each tbl In doc.Tables
+        ' 1. 让整个表格在 A4 纸页面中居中
+        tbl.Rows.Alignment = wdAlignRowCenter
+        
+        ' 2. 单元格内容【垂直居中】
+        tbl.Range.Cells.VerticalAlignment = wdCellAlignVerticalCenter
+        
+        With tbl.Range
+            ' 3. 统一表格内字体为“仿宋_GB2312 三号”
+            .Font.NameFarEast = "仿宋_GB2312"
+            .Font.NameAscii = "Times New Roman"
+            .Font.Size = 16
+            .Font.Bold = False
+            
+            ' 4. 表格内段落排版洗底
+            With .ParagraphFormat
+                .Alignment = wdAlignParagraphCenter ' 【水平居中】
+                .CharacterUnitFirstLineIndent = 0   ' 【核心】：剥离首行缩进，确保文字绝对居中！
+                .FirstLineIndent = 0
+                .LeftIndent = 0
+                .RightIndent = 0
+                .LineSpacingRule = wdLineSpaceExactly
+                .LineSpacing = 30 ' 维持公文标准的30磅固定行距
+                .DisableLineHeightGrid = True
+            End With
+        End With
+        
+        ' 5. 智能表头美化：公文表格的第一行通常是表头，自动设为黑体加粗
+        If tbl.Rows.Count > 1 Then
+            tbl.Rows(1).Range.Font.Bold = True
+            tbl.Rows(1).Range.Font.NameFarEast = "黑体"
+        End If
+        
+        DoEvents ' 释放心跳
+    Next tbl
+    
+    '==============================
+    ' 七、恢复环境与结束
+    '==============================
+    Application.Options.Pagination = True
+    Application.ScreenUpdating = True
+    Application.DisplayAlerts = True
+    System.Cursor = wdCursorNormal
+    
+    MsgBox "全套公文排版完毕！" & vbCrLf & "1. 表格已实现完美的水平/垂直双向居中。" & vbCrLf & "2. 表格内的首行缩进偏移已被彻底消除。" & vbCrLf & "3. 表头已自动套用黑体加粗。", vbInformation
+    Exit Sub
+
+ErrorHandler:
+    Application.Options.Pagination = True
+    Application.ScreenUpdating = True
+    Application.DisplayAlerts = True
+    System.Cursor = wdCursorNormal
+    MsgBox "执行异常：" & Err.Description, vbCritical
+End Sub
+
+Private Sub CleanMarkdown(doc As Document)
+    Dim symbols As Variant
+    Dim j As Integer
+    symbols = Array("**", "---", "### ", "## ", "# ", "> ")
+    
+    For j = LBound(symbols) To UBound(symbols)
+        With doc.Content.Find
+            .ClearFormatting
+            .Replacement.ClearFormatting
+            .Text = symbols(j)
+            .Replacement.Text = ""
+            .Forward = True
+            .Wrap = wdFindContinue
+            .MatchWildcards = False
+            .Execute Replace:=wdReplaceAll
+        End With
+        DoEvents
+    Next j
+End Sub
